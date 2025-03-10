@@ -112,7 +112,7 @@ You need MongoDB Atlas API keys to use this tool. To create API keys:
 Clone the repository and install dependencies:
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/mongodb-developer/mcp-mongodb-atlas.git
 cd mcp-mongodb-atlas
 npm install
 ```
