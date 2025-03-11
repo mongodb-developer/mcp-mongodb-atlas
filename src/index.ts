@@ -29,6 +29,7 @@ interface CreateUserInput {
   projectId: string;
   username: string;
   password: string;
+  roles: string[];
 }
 
 interface ConnectionStringsInput {
@@ -149,6 +150,7 @@ class AtlasProjectManager {
 
   private async createAtlasUser(input: CreateUserInput) {
     try {
+      const roles = JSON.stringify(input.roles.map(role => ({ databaseName: 'admin', roleName: role })));
       const curlCommand = `curl --location --request POST 'https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/databaseUsers' \\
         --user "${this.apiKey}:${this.privateKey}" --digest \\
         --header 'Content-Type: application/json' \\
@@ -156,10 +158,7 @@ class AtlasProjectManager {
           "databaseName": "admin",
           "username": "${input.username}",
           "password": "${input.password}",
-          "roles": [{
-            "roleName": "atlasAdmin",
-            "databaseName": "admin"
-          }]
+          "roles": ${roles}
         }'`;
 
       const { stdout, stderr } = await execPromise(curlCommand);
@@ -399,6 +398,13 @@ class AtlasProjectManager {
                 type: 'string',
                 description: 'The password for the database user.',
               },
+              roles: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+                description: 'An array of roles for the user. Default is [atlasAdmin].',
+              }
             },
             required: ['projectId', 'username', 'password'],
           },
