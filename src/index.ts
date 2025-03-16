@@ -1,16 +1,13 @@
 #!/usr/bin/env node
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import crypto from 'crypto';
 import {
   CallToolRequestSchema,
   ErrorCode,
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
-import { exec } from 'child_process';
-import { promisify } from 'util';
-
-const execPromise = promisify(exec);
 
 interface CreateClusterInput {
   projectId: string;
@@ -55,54 +52,107 @@ class AtlasProjectManager {
   private apiKey: string;
   private privateKey: string;
 
+  private async makeAtlasRequest(url: string, method: string, body?: any) {
+    // Step 1: Make initial request to get digest challenge
+    const initialResponse = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: body ? JSON.stringify(body) : undefined
+    });
+
+    // Check if we got a 401 with WWW-Authenticate header (digest challenge)
+    if (initialResponse.status === 401) {
+      const wwwAuthHeader = initialResponse.headers.get('WWW-Authenticate');
+      if (!wwwAuthHeader || !wwwAuthHeader.startsWith('Digest ')) {
+        throw new Error('Expected Digest authentication challenge not received');
+      }
+
+      // Parse the digest challenge
+      const authDetails: Record<string, string> = {};
+      wwwAuthHeader.substring(7).split(',').forEach(part => {
+        const [key, value] = part.trim().split('=');
+        // Remove quotes if present
+        authDetails[key] = value.startsWith('"') ? value.slice(1, -1) : value;
+      });
+
+      // Generate a random client nonce (cnonce)
+      const cnonce = Math.random().toString(36).substring(2, 15);
+      const nc = '00000001'; // nonce count, incremented for each request with the same nonce
+
+      // Calculate the response hash
+      const ha1 = this.md5(`${this.apiKey}:${authDetails.realm}:${this.privateKey}`);
+      const ha2 = this.md5(`${method}:${new URL(url).pathname}`);
+      const response = this.md5(`${ha1}:${authDetails.nonce}:${nc}:${cnonce}:${authDetails.qop}:${ha2}`);
+
+      // Build the Authorization header
+      const authHeader = `Digest username="${this.apiKey}", realm="${authDetails.realm}", nonce="${authDetails.nonce}", uri="${new URL(url).pathname}", qop=${authDetails.qop}, nc=${nc}, cnonce="${cnonce}", response="${response}", algorithm=${authDetails.algorithm || 'MD5'}`;
+
+      // Make the actual request with the digest authentication
+      const digestResponse = await fetch(url, {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': authHeader
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
+
+      if (!digestResponse.ok) {
+        throw new Error(`Atlas API error: ${digestResponse.statusText}`);
+      }
+
+      return digestResponse.json();
+    } else if (initialResponse.ok) {
+      // If the initial request succeeded without authentication (unlikely)
+      return initialResponse.json();
+    } else {
+      throw new Error(`Atlas API error: ${initialResponse.statusText}`);
+    }
+  }
+
+  // Helper method to calculate MD5 hash
+  private md5(data: string): string {
+    // Use createRequire to enable require in ES modules
+    return crypto.createHash('md5').update(data).digest('hex');
+  }
+
   private async createAtlasCluster(input: CreateClusterInput) {
     if (input.tier === 'M0') {
       return {
-        content: [
-          {
-            type: 'text',
-            text: 'M0 (Free Tier) clusters cannot be created via the API. Please use the MongoDB Atlas UI to create an M0 cluster.'
-          }
-        ],
+        content: [{
+          type: 'text',
+          text: 'M0 (Free Tier) clusters cannot be created via the API. Please use the MongoDB Atlas UI to create an M0 cluster.'
+        }],
         isError: true
       };
     }
 
     try {
-      const curlCommand = `curl --location --request POST 'https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters?pretty=true' \\
-        --user "${this.apiKey}:${this.privateKey}" --digest \\
-        --header 'Content-Type: application/json' \\
-        --data-raw '{
-          "name": "${input.clusterName}",
-          "providerSettings": {
-            "providerName": "${input.cloudProvider}",
-            "instanceSizeName": "${input.tier}",
-            "regionName": "${input.region}"
-          }
-        }'`;
+      const url = `https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters?pretty=true`;
+      const body = {
+        name: input.clusterName,
+        providerSettings: {
+          providerName: input.cloudProvider,
+          instanceSizeName: input.tier,
+          regionName: input.region
+        }
+      };
 
-      const { stdout, stderr } = await execPromise(curlCommand);
-      
-      if (stderr) {
-        console.error('Stderr:', stderr);
-      }
-
+      const result = await this.makeAtlasRequest(url, 'POST', body);
       return {
-        content: [
-          {
-            type: 'text',
-            text: stdout
-          }
-        ]
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }]
       };
     } catch (error: any) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Atlas API error: ${error.message}`
-          }
-        ],
+        content: [{
+          type: 'text',
+          text: error.message
+        }],
         isError: true
       };
     }
@@ -110,39 +160,25 @@ class AtlasProjectManager {
 
   private async setupAtlasNetworkAccess(input: NetworkAccessInput) {
     try {
-      // Create a JSON array of IP addresses
-      const ipAddressesJson = JSON.stringify(input.ipAddresses.map(ip => ({
+      const url = `https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/accessList`;
+      const body = input.ipAddresses.map(ip => ({
         ipAddress: ip,
         comment: "Added via Atlas Project Manager MCP"
-      })));
+      }));
 
-      const curlCommand = `curl --location --request POST 'https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/accessList' \\
-        --user "${this.apiKey}:${this.privateKey}" --digest \\
-        --header 'Content-Type: application/json' \\
-        --data-raw '${ipAddressesJson}'`;
-
-      const { stdout, stderr } = await execPromise(curlCommand);
-      
-      if (stderr) {
-        console.error('Stderr:', stderr);
-      }
-
+      const result = await this.makeAtlasRequest(url, 'POST', body);
       return {
-        content: [
-          {
-            type: 'text',
-            text: stdout
-          }
-        ]
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }]
       };
     } catch (error: any) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Atlas API error: ${error.message}`
-          }
-        ],
+        content: [{
+          type: 'text',
+          text: error.message
+        }],
         isError: true
       };
     }
@@ -150,39 +186,27 @@ class AtlasProjectManager {
 
   private async createAtlasUser(input: CreateUserInput) {
     try {
-      const roles = JSON.stringify(input.roles.map(role => ({ databaseName: 'admin', roleName: role })));
-      const curlCommand = `curl --location --request POST 'https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/databaseUsers' \\
-        --user "${this.apiKey}:${this.privateKey}" --digest \\
-        --header 'Content-Type: application/json' \\
-        --data-raw '{
-          "databaseName": "admin",
-          "username": "${input.username}",
-          "password": "${input.password}",
-          "roles": ${roles}
-        }'`;
+      const url = `https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/databaseUsers`;
+      const body = {
+        databaseName: "admin",
+        username: input.username,
+        password: input.password,
+        roles: input.roles.map(role => ({ databaseName: 'admin', roleName: role }))
+      };
 
-      const { stdout, stderr } = await execPromise(curlCommand);
-      
-      if (stderr) {
-        console.error('Stderr:', stderr);
-      }
-
+      const result = await this.makeAtlasRequest(url, 'POST', body);
       return {
-        content: [
-          {
-            type: 'text',
-            text: stdout
-          }
-        ]
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }]
       };
     } catch (error: any) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Atlas API error: ${error.message}`
-          }
-        ],
+        content: [{
+          type: 'text',
+          text: error.message
+        }],
         isError: true
       };
     }
@@ -190,31 +214,20 @@ class AtlasProjectManager {
 
   private async getAtlasConnectionStrings(input: ConnectionStringsInput) {
     try {
-      const curlCommand = `curl --location --request GET 'https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters/${input.clusterName}' \\
-        --user "${this.apiKey}:${this.privateKey}" --digest`;
-
-      const { stdout, stderr } = await execPromise(curlCommand);
-      
-      if (stderr) {
-        console.error('Stderr:', stderr);
-      }
-
+      const url = `https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters/${input.clusterName}`;
+      const result = await this.makeAtlasRequest(url, 'GET');
       return {
-        content: [
-          {
-            type: 'text',
-            text: stdout
-          }
-        ]
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }]
       };
     } catch (error: any) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Atlas API error: ${error.message}`
-          }
-        ],
+        content: [{
+          type: 'text',
+          text: error.message
+        }],
         isError: true
       };
     }
@@ -222,31 +235,20 @@ class AtlasProjectManager {
 
   private async listAtlasProjects() {
     try {
-      const curlCommand = `curl --location --request GET 'https://cloud.mongodb.com/api/atlas/v1.0/groups' \\
-        --user "${this.apiKey}:${this.privateKey}" --digest`;
-
-      const { stdout, stderr } = await execPromise(curlCommand);
-      
-      if (stderr) {
-        console.error('Stderr:', stderr);
-      }
-
+      const url = 'https://cloud.mongodb.com/api/atlas/v1.0/groups';
+      const result = await this.makeAtlasRequest(url, 'GET');
       return {
-        content: [
-          {
-            type: 'text',
-            text: stdout
-          }
-        ]
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }]
       };
     } catch (error: any) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Atlas API error: ${error.message}`
-          }
-        ],
+        content: [{
+          type: 'text',
+          text: error.message
+        }],
         isError: true
       };
     }
@@ -254,31 +256,20 @@ class AtlasProjectManager {
 
   private async listAtlasClusters(input: ListClustersInput) {
     try {
-      const curlCommand = `curl --location --request GET 'https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters' \\
-        --user "${this.apiKey}:${this.privateKey}" --digest`;
-
-      const { stdout, stderr } = await execPromise(curlCommand);
-      
-      if (stderr) {
-        console.error('Stderr:', stderr);
-      }
-
+      const url = `https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters`;
+      const result = await this.makeAtlasRequest(url, 'GET');
       return {
-        content: [
-          {
-            type: 'text',
-            text: stdout
-          }
-        ]
+        content: [{
+          type: 'text',
+          text: JSON.stringify(result, null, 2)
+        }]
       };
     } catch (error: any) {
       return {
-        content: [
-          {
-            type: 'text',
-            text: `Atlas API error: ${error.message}`
-          }
-        ],
+        content: [{
+          type: 'text',
+          text: error.message
+        }],
         isError: true
       };
     }
@@ -297,11 +288,9 @@ class AtlasProjectManager {
       }
     );
 
-    // Try to get API keys from environment variables first
     let apiKey = process.env.ATLAS_PUBLIC_KEY;
     let privateKey = process.env.ATLAS_PRIVATE_KEY;
 
-    // If environment variables are not set, try to get from command line arguments
     if (!apiKey || !privateKey) {
       const args = process.argv.slice(2);
       if (args.length >= 2) {
@@ -318,7 +307,6 @@ class AtlasProjectManager {
 
     this.setupToolHandlers();
 
-    // Error handling
     this.server.onerror = (error) => console.error('[MCP Error]', error);
     process.on('SIGINT', async () => {
       await this.server.close();
@@ -452,7 +440,7 @@ class AtlasProjectManager {
       ],
     }));
 
-    this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    this.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
       if (!['create_atlas_cluster', 'setup_atlas_network_access', 'create_atlas_user', 'get_atlas_connection_strings', 'list_atlas_projects', 'list_atlas_clusters'].includes(request.params.name)) {
         throw new McpError(
           ErrorCode.MethodNotFound,
@@ -494,32 +482,48 @@ class AtlasProjectManager {
           break;
       }
 
-      let content;
+      let result;
 
-      switch (request.params.name) {
-        case 'create_atlas_cluster':
-          content = await this.createAtlasCluster(input as unknown as CreateClusterInput);
-          break;
-        case 'setup_atlas_network_access':
-          content = await this.setupAtlasNetworkAccess(input as unknown as NetworkAccessInput);
-          break;
-        case 'create_atlas_user':
-          content = await this.createAtlasUser(input as unknown as CreateUserInput);
-          break;
-        case 'get_atlas_connection_strings':
-          content = await this.getAtlasConnectionStrings(input as unknown as ConnectionStringsInput);
-          break;
-        case 'list_atlas_projects':
-          content = await this.listAtlasProjects();
-          break;
-        case 'list_atlas_clusters':
-          content = await this.listAtlasClusters(input as unknown as ListClustersInput);
-          break;
-        default:
-          throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+      try {
+        switch (request.params.name) {
+          case 'create_atlas_cluster':
+            result = await this.createAtlasCluster(input as unknown as CreateClusterInput);
+            break;
+          case 'setup_atlas_network_access':
+            result = await this.setupAtlasNetworkAccess(input as unknown as NetworkAccessInput);
+            break;
+          case 'create_atlas_user':
+            result = await this.createAtlasUser(input as unknown as CreateUserInput);
+            break;
+          case 'get_atlas_connection_strings':
+            result = await this.getAtlasConnectionStrings(input as unknown as ConnectionStringsInput);
+            break;
+          case 'list_atlas_projects':
+            result = await this.listAtlasProjects();
+            break;
+          case 'list_atlas_clusters':
+            result = await this.listAtlasClusters(input as unknown as ListClustersInput);
+            break;
+          default:
+            throw new McpError(ErrorCode.MethodNotFound, `Unknown tool: ${request.params.name}`);
+        }
+
+        // Ensure we return the expected format
+        return {
+          content: result.content,
+          _meta: request.params._meta
+        };
+      } catch (error: any) {
+        // Handle any errors that might occur
+        return {
+          content: [{
+            type: 'text',
+            text: `Error: ${error.message}`
+          }],
+          isError: true,
+          _meta: request.params._meta
+        };
       }
-
-      return content;
     });
   }
 
