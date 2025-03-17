@@ -2,6 +2,13 @@
 
 An MCP (Model Context Protocol) server for managing MongoDB Atlas projects. This package provides tools for creating and managing MongoDB Atlas clusters, users, and network access through the MCP interface.
 
+
+## Demo Video
+
+[![MongoDB Atlas MCP Server Demo](https://img.youtube.com/vi/h8nmRsOGUew/0.jpg)](https://www.youtube.com/watch?v=h8nmRsOGUew)
+
+Watch the demonstration video to see MongoDB Atlas MCP Server in action.
+
 ## Features
 
 ### MCP Tools
@@ -35,6 +42,7 @@ npx mcp-mongodb-atlas
 npx mcp-mongodb-atlas "your-public-key" "your-private-key"
 ```
 
+
 ### With Cline (VSCode Extension)
 
 To use with Cline in VSCode, add the server config to your MCP settings file:
@@ -63,7 +71,7 @@ The MCP settings file is located at:
 
 ### With Cursor
 
-To use with Cursor, go to "Features" > "MCP Server" in the settings and add a new server with the following configuration:
+To use with Cursor, go to "Cursor settings" > "MCP" in the settings and add a new server with the following configuration:
 
 1. **Name**: `atlas` (or any name you prefer)
 2. **Command**: `npx mcp-mongodb-atlas`
@@ -72,6 +80,25 @@ To use with Cursor, go to "Features" > "MCP Server" in the settings and add a ne
 ## Suggested Command
 npx mcp-mongodb-atlas <public_key> <private_key>
 ```
+
+Newer versions can set the `~/.cursor/mcp.json` file with:
+```
+{
+  "mcpServers": {
+    "atlas": {
+      "command": "npx",
+      "args": ["mcp-mongodb-atlas"],
+      "env": {
+        "ATLAS_PUBLIC_KEY": "your-public-key",
+        "ATLAS_PRIVATE_KEY": "your-private-key"
+      },
+      "disabled": false,
+      "autoApprove": []
+    }
+  }
+}
+```
+
 4. **Environment Variables** (Optional):
    - `ATLAS_PUBLIC_KEY`: Your MongoDB Atlas public key
    - `ATLAS_PRIVATE_KEY`: Your MongoDB Atlas private key
