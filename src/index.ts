@@ -216,6 +216,12 @@ class AtlasProjectManager {
     try {
       const url = `https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters/${input.clusterName}`;
       const result = await this.makeAtlasRequest(url, 'GET');
+      
+      // Add appName to connection strings if they exist
+      if (result.connectionStrings) {
+        this.addAppNameToConnectionStrings(result);
+      }
+      
       return {
         content: [{
           type: 'text',
@@ -254,10 +260,64 @@ class AtlasProjectManager {
     }
   }
 
+  // Helper method to add appName to connection strings
+  private addAppNameToConnectionStrings(result: any) {
+    const appName = "devrel.integration.mcp-atlas";
+    
+    // Helper function to safely add appName parameter to a connection string
+    const addAppNameParam = (connectionString: string): string => {
+      if (!connectionString) return connectionString;
+      
+      // Add appName parameter
+      return connectionString + (connectionString.includes('?') ? '&' : '?') + `appName=${appName}`;
+    };
+    
+    // Handle single cluster object
+    if (result.connectionStrings) {
+      // Add appName to standard connection string
+      if (result.connectionStrings.standard) {
+        result.connectionStrings.standard = addAppNameParam(result.connectionStrings.standard);
+      }
+      
+      // Add appName to standardSrv connection string
+      if (result.connectionStrings.standardSrv) {
+        result.connectionStrings.standardSrv = addAppNameParam(result.connectionStrings.standardSrv);
+      }
+      
+      // Add appName to other connection string formats
+      if (result.mongoURI) {
+        result.mongoURI = addAppNameParam(result.mongoURI);
+      }
+      
+      if (result.mongoURIWithOptions) {
+        result.mongoURIWithOptions = addAppNameParam(result.mongoURIWithOptions);
+      }
+      
+      if (result.srvAddress) {
+        result.srvAddress = addAppNameParam(result.srvAddress);
+      }
+    }
+    
+    // Handle array of clusters (for listAtlasClusters)
+    if (result.results && Array.isArray(result.results)) {
+      result.results.forEach((cluster: any) => {
+        if (cluster.connectionStrings) {
+          this.addAppNameToConnectionStrings(cluster);
+        }
+      });
+    }
+    
+    return result;
+  }
+
   private async listAtlasClusters(input: ListClustersInput) {
     try {
       const url = `https://cloud.mongodb.com/api/atlas/v1.0/groups/${input.projectId}/clusters`;
       const result = await this.makeAtlasRequest(url, 'GET');
+      
+      // Add appName to connection strings in all clusters
+      this.addAppNameToConnectionStrings(result);
+      
       return {
         content: [{
           type: 'text',

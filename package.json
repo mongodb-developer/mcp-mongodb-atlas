@@ -1,6 +1,6 @@
 {
   "name": "mcp-mongodb-atlas",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "MCP Tool to operate and integrate MongoDB Atlas projects into an AI developed project",
   "type": "module",
   "bin": {
