@@ -1,3 +1,10 @@
+<h2 align="center">
+  📢 <strong>COMMUNITY SERVER NOTICE</strong><br/>
+  This is a community-maintained MCP Server.<br/>
+  👉 For the <strong>official</strong> MongoDB MCP Server, visit  
+  <a href="https://github.com/mongodb-js/mongodb-mcp-server">mongodb-js/mongodb-mcp-server</a>
+</h2>
+
 # MongoDB Atlas MCP Server
 
 An MCP (Model Context Protocol) server for managing MongoDB Atlas projects. This package provides tools for creating and managing MongoDB Atlas clusters, users, and network access through the MCP interface.
